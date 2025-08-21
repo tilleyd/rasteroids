@@ -23,6 +23,8 @@ const ASTEROID_SMALL_RADIUS = 44
 const ASTEROID_MIN_VCOUNT = 16
 const ASTEROID_MAX_VCOUNT = 32
 const ASTEROID_SPEED = 100
+const ASTEROID_SPLIT_ANGLE = 30 * rl.Deg2rad
+const ASTEROID_SPLIT_SPEEDUP = 1.3
 
 type Player struct {
 	position  rl.Vector2
@@ -145,16 +147,34 @@ func (g *Game) Update(delta float32) {
 		g.asteroids[i].angle = AngleWrap(g.asteroids[i].angle)
 	}
 
-	for i := 0; i < len(g.bullets); i++ {
+bulletLoop:
+	for i := 0; i < len(g.bullets); {
 		g.bullets[i].position.X += g.bullets[i].velocity.X * delta
 		g.bullets[i].position.Y += g.bullets[i].velocity.Y * delta
 		g.bullets[i].position = LazyWrap(g.bullets[i].position, BULLET_RADIUS)
-		g.bullets[i].timer -= delta
 
+		for j := 0; j < len(g.asteroids); {
+			if g.asteroids[j].CollidesWithBullet(g.bullets[i]) {
+				g.SpawnChildAsteroids(g.asteroids[j])
+				// delete the asteroid first
+				g.asteroids[j] = g.asteroids[len(g.asteroids)-1]
+				g.asteroids = g.asteroids[:len(g.asteroids)-1]
+				// delete the bullet
+				g.bullets[i] = g.bullets[len(g.bullets)-1]
+				g.bullets = g.bullets[:len(g.bullets)-1]
+				continue bulletLoop
+			} else {
+				j++
+			}
+		}
+
+		g.bullets[i].timer -= delta
 		if g.bullets[i].timer <= 0 {
 			// delete by swapping with last element
 			g.bullets[i] = g.bullets[len(g.bullets)-1]
 			g.bullets = g.bullets[:len(g.bullets)-1]
+		} else {
+			i++
 		}
 	}
 }
@@ -212,6 +232,22 @@ func (g *Game) SpawnAsteroid() {
 	g.asteroids = append(g.asteroids, asteroid)
 }
 
+func (g *Game) SpawnChildAsteroids(a Asteroid) {
+	if a.size == ASTEROID_SIZE_SMALL {
+		return
+	}
+
+	v1 := rl.Vector2Rotate(a.velocity, m.RandRangef(-ASTEROID_SPLIT_ANGLE, ASTEROID_SPLIT_ANGLE))
+	v1 = rl.Vector2Scale(v1, ASTEROID_SPLIT_SPEEDUP)
+	v2 := rl.Vector2Rotate(a.velocity, m.RandRangef(-ASTEROID_SPLIT_ANGLE, ASTEROID_SPLIT_ANGLE))
+	v2 = rl.Vector2Scale(v2, ASTEROID_SPLIT_SPEEDUP)
+
+	a1 := NewAsteroid(a.size-1, a.position, v1, a.angularVelocity)
+	a2 := NewAsteroid(a.size-1, a.position, v2, a.angularVelocity)
+
+	g.asteroids = append(g.asteroids, a1, a2)
+}
+
 func NewAsteroid(
 	size AsteroidSize,
 	position rl.Vector2,
@@ -251,6 +287,7 @@ func NewAsteroid(
 		v := rl.Vector2Scale(rl.Vector2{X: x, Y: y}, vRad)
 		a.vertices[i] = v
 	}
+	a.size = size
 	return
 }
 
@@ -279,4 +316,13 @@ func AngleWrap(a float32) float32 {
 		a -= 2 * math.Pi
 	}
 	return a
+}
+
+func (a Asteroid) CollidesWithBullet(b Bullet) bool {
+	// get the bullet relative to the frame of the asteroid
+	relativeP := rl.Vector2Subtract(b.position, a.position)
+	relativeP = rl.Vector2Rotate(relativeP, -a.angle)
+
+	c := rl.CheckCollisionPointPoly(relativeP, a.vertices)
+	return c
 }
