@@ -12,6 +12,9 @@ const PLAYER_ACCEL = 640
 const PLAYER_MAX_SPEED = 400
 const PLAYER_TURN_SPEED = math.Pi
 const PLAYER_RADIUS = 15
+const PLAYER_ANGLE = 140 * rl.Deg2rad
+const PLAYER_SHIELD_LIFETIME_S = 2
+const PLAYER_START_DIRECTION = 270 * rl.Deg2rad
 const BULLET_RADIUS = 2
 const BULLET_SPEED = 500
 const BULLET_COOLDOWN_S = 0.2
@@ -27,10 +30,11 @@ const ASTEROID_SPLIT_ANGLE = 30 * rl.Deg2rad
 const ASTEROID_SPLIT_SPEEDUP = 1.3
 
 type Player struct {
-	position  rl.Vector2
-	velocity  rl.Vector2
-	direction float32
-	cooldown  float32
+	position       rl.Vector2
+	velocity       rl.Vector2
+	direction      float32
+	bulletCooldown float32
+	shield         float32
 }
 
 type Bullet struct {
@@ -81,6 +85,8 @@ func NewGame() (g Game) {
 	g.gameOver = false
 	g.player.position.X = float32(rl.GetScreenWidth()) * 0.5
 	g.player.position.Y = float32(rl.GetScreenHeight()) * 0.5
+	g.player.shield = PLAYER_SHIELD_LIFETIME_S
+	g.player.direction = PLAYER_START_DIRECTION
 
 	for range 3 {
 		g.SpawnAsteroid()
@@ -111,7 +117,7 @@ func (g *Game) Update(delta float32) {
 	}
 	g.player.direction = AngleWrap(g.player.direction)
 
-	if rl.IsKeyDown(rl.KeySpace) && g.player.cooldown <= 0 {
+	if rl.IsKeyDown(rl.KeySpace) && g.player.bulletCooldown <= 0 {
 		velocity := rl.Vector2{
 			X: xUnit*BULLET_SPEED + g.player.velocity.X,
 			Y: yUnit*BULLET_SPEED + g.player.velocity.Y,
@@ -123,14 +129,18 @@ func (g *Game) Update(delta float32) {
 		}
 
 		g.bullets = append(g.bullets, bullet)
-		g.player.cooldown = BULLET_COOLDOWN_S
+		g.player.bulletCooldown = BULLET_COOLDOWN_S
 	}
 
 	if !rl.IsKeyDown(rl.KeySpace) {
-		g.player.cooldown = 0.0
+		g.player.bulletCooldown = 0.0
 	}
-	if g.player.cooldown > 0 {
-		g.player.cooldown -= delta
+	if g.player.bulletCooldown > 0 {
+		g.player.bulletCooldown -= delta
+	}
+
+	if g.player.shield > 0 {
+		g.player.shield -= delta
 	}
 
 	g.player.velocity = rl.Vector2ClampValue(g.player.velocity, 0, PLAYER_MAX_SPEED)
@@ -138,13 +148,24 @@ func (g *Game) Update(delta float32) {
 	g.player.position.Y += g.player.velocity.Y * delta
 	g.player.position = LazyWrap(g.player.position, PLAYER_RADIUS)
 
-	for i := range len(g.asteroids) {
+	for i := 0; i < len(g.asteroids); {
 		g.asteroids[i].position.X += g.asteroids[i].velocity.X * delta
 		g.asteroids[i].position.Y += g.asteroids[i].velocity.Y * delta
 		g.asteroids[i].position = LazyWrap(g.asteroids[i].position, g.asteroids[i].maxRadius)
 
 		g.asteroids[i].angle += g.asteroids[i].angularVelocity * delta
 		g.asteroids[i].angle = AngleWrap(g.asteroids[i].angle)
+
+		if g.player.shield < 0 && g.asteroids[i].CollidesWithPlayer(g.player) {
+			g.SpawnChildAsteroids(g.asteroids[i])
+			// delete the asteroid
+			g.asteroids[i] = g.asteroids[len(g.asteroids)-1]
+			g.asteroids = g.asteroids[:len(g.asteroids)-1]
+
+			g.KillPlayer()
+		} else {
+			i++
+		}
 	}
 
 bulletLoop:
@@ -204,14 +225,17 @@ func (g *Game) Draw() {
 
 	unit := rl.Vector2{X: PLAYER_RADIUS, Y: 0}
 	v1 := rl.Vector2Rotate(unit, g.player.direction)
-	v2 := rl.Vector2Rotate(unit, g.player.direction-140*rl.Deg2rad)
-	v3 := rl.Vector2Rotate(unit, g.player.direction+140*rl.Deg2rad)
+	v2 := rl.Vector2Rotate(unit, g.player.direction-PLAYER_ANGLE)
+	v3 := rl.Vector2Rotate(unit, g.player.direction+PLAYER_ANGLE)
 	rl.DrawTriangle(
 		rl.Vector2Add(g.player.position, v1),
 		rl.Vector2Add(g.player.position, v2),
 		rl.Vector2Add(g.player.position, v3),
 		rl.White,
 	)
+	if g.player.shield > 0 {
+		rl.DrawCircleLines(int32(g.player.position.X), int32(g.player.position.Y), PLAYER_RADIUS*1.5, rl.White)
+	}
 
 	rl.EndDrawing()
 }
@@ -320,9 +344,31 @@ func AngleWrap(a float32) float32 {
 
 func (a Asteroid) CollidesWithBullet(b Bullet) bool {
 	// get the bullet relative to the frame of the asteroid
-	relativeP := rl.Vector2Subtract(b.position, a.position)
-	relativeP = rl.Vector2Rotate(relativeP, -a.angle)
+	relativeP := rl.Vector2Rotate(rl.Vector2Subtract(b.position, a.position), -a.angle)
 
 	c := rl.CheckCollisionPointPoly(relativeP, a.vertices)
 	return c
+}
+
+func (a Asteroid) CollidesWithPlayer(p Player) bool {
+	// get the player's 3 corner points relative to the frame of the asteroid
+	pp := rl.Vector2Rotate(rl.Vector2Subtract(p.position, a.position), -a.angle)
+
+	unit := rl.Vector2{X: PLAYER_RADIUS, Y: 0}
+	v1 := rl.Vector2Rotate(unit, p.direction-a.angle)
+	v2 := rl.Vector2Rotate(unit, p.direction-PLAYER_ANGLE-a.angle)
+	v3 := rl.Vector2Rotate(unit, p.direction+PLAYER_ANGLE-a.angle)
+
+	// this is only approximate but good enough given raylib's available methods
+	return rl.CheckCollisionPointPoly(rl.Vector2Add(pp, v1), a.vertices) ||
+		rl.CheckCollisionPointPoly(rl.Vector2Add(pp, v2), a.vertices) ||
+		rl.CheckCollisionPointPoly(rl.Vector2Add(pp, v3), a.vertices)
+}
+
+func (g *Game) KillPlayer() {
+	g.player.position.X = float32(rl.GetScreenWidth()) * 0.5
+	g.player.position.Y = float32(rl.GetScreenHeight()) * 0.5
+	g.player.velocity = rl.Vector2{}
+	g.player.direction = PLAYER_START_DIRECTION
+	g.player.shield = PLAYER_SHIELD_LIFETIME_S
 }
