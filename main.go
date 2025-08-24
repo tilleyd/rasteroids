@@ -129,16 +129,30 @@ func (g *Game) NextStage() {
 }
 
 func (g *Game) Update(delta float32) {
-	if g.state == GAME_STATE_START && rl.IsKeyPressed(rl.KeySpace) {
-		g.state = GAME_STATE_GAMEPLAY
-		return
+	for i := range g.asteroids {
+		g.asteroids[i].position.X += g.asteroids[i].velocity.X * delta
+		g.asteroids[i].position.Y += g.asteroids[i].velocity.Y * delta
+		g.asteroids[i].position = LazyWrap(g.asteroids[i].position, g.asteroids[i].maxRadius)
+
+		g.asteroids[i].angle += g.asteroids[i].angularVelocity * delta
+		g.asteroids[i].angle = AngleWrap(g.asteroids[i].angle)
 	}
 
-	if g.state == GAME_STATE_GAMEOVER && rl.IsKeyPressed(rl.KeySpace) {
-		g.RestartGame()
-		return
+	switch g.state {
+	case GAME_STATE_START:
+		if rl.IsKeyPressed(rl.KeySpace) {
+			g.state = GAME_STATE_GAMEPLAY
+		}
+	case GAME_STATE_GAMEOVER:
+		if rl.IsKeyPressed(rl.KeySpace) {
+			g.RestartGame()
+		}
+	case GAME_STATE_GAMEPLAY:
+		g.UpdateGameStage(delta)
 	}
+}
 
+func (g *Game) UpdateGameStage(delta float32) {
 	xUnit := m.Cosf(g.player.direction)
 	yUnit := m.Sinf(g.player.direction)
 
@@ -185,13 +199,6 @@ func (g *Game) Update(delta float32) {
 	g.player.position = LazyWrap(g.player.position, PLAYER_RADIUS)
 
 	for i := 0; i < len(g.asteroids); {
-		g.asteroids[i].position.X += g.asteroids[i].velocity.X * delta
-		g.asteroids[i].position.Y += g.asteroids[i].velocity.Y * delta
-		g.asteroids[i].position = LazyWrap(g.asteroids[i].position, g.asteroids[i].maxRadius)
-
-		g.asteroids[i].angle += g.asteroids[i].angularVelocity * delta
-		g.asteroids[i].angle = AngleWrap(g.asteroids[i].angle)
-
 		if g.player.shield < 0 && g.asteroids[i].CollidesWithPlayer(g.player) {
 			g.SpawnChildAsteroids(g.asteroids[i])
 			// delete the asteroid
