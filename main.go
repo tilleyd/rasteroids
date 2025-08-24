@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 
 	m "github.com/tilleyd/rasteroids/math"
@@ -15,9 +16,11 @@ const PLAYER_RADIUS = 15
 const PLAYER_ANGLE = 140 * rl.Deg2rad
 const PLAYER_SHIELD_LIFETIME_S = 2
 const PLAYER_START_DIRECTION = 270 * rl.Deg2rad
+const GAME_START_LIVES = 3
+const GAME_ASTEROID_SCORE = 100
+const GAME_STAGE_BREAK_S = 2
 const BULLET_RADIUS = 2
 const BULLET_SPEED = 500
-const BULLET_COOLDOWN_S = 0.2
 const BULLET_LIFETIME_S = 1.5
 const ASTEROID_DEVIATION = 0.1
 const ASTEROID_LARGE_RADIUS = 88
@@ -30,11 +33,10 @@ const ASTEROID_SPLIT_ANGLE = 30 * rl.Deg2rad
 const ASTEROID_SPLIT_SPEEDUP = 1.3
 
 type Player struct {
-	position       rl.Vector2
-	velocity       rl.Vector2
-	direction      float32
-	bulletCooldown float32
-	shield         float32
+	position  rl.Vector2
+	velocity  rl.Vector2
+	direction float32
+	shield    float32
 }
 
 type Bullet struct {
@@ -61,11 +63,23 @@ type Asteroid struct {
 	vertices        []rl.Vector2
 }
 
+type GameState int
+
+const (
+	GAME_STATE_START = iota
+	GAME_STATE_GAMEPLAY
+	GAME_STATE_GAMEOVER
+)
+
 type Game struct {
-	gameOver  bool
-	player    Player
-	bullets   []Bullet
-	asteroids []Asteroid
+	state      GameState
+	lives      int
+	score      int
+	stage      int
+	stageBreak float32
+	player     Player
+	bullets    []Bullet
+	asteroids  []Asteroid
 }
 
 func main() {
@@ -75,26 +89,56 @@ func main() {
 
 	game := NewGame()
 
-	for !(rl.WindowShouldClose() || game.gameOver) {
+	for !(rl.WindowShouldClose()) {
 		game.Update(rl.GetFrameTime())
 		game.Draw()
 	}
 }
 
 func NewGame() (g Game) {
-	g.gameOver = false
-	g.player.position.X = float32(rl.GetScreenWidth()) * 0.5
-	g.player.position.Y = float32(rl.GetScreenHeight()) * 0.5
-	g.player.shield = PLAYER_SHIELD_LIFETIME_S
-	g.player.direction = PLAYER_START_DIRECTION
-
-	for range 3 {
-		g.SpawnAsteroid()
-	}
+	g.state = GAME_STATE_START
+	g.lives = GAME_START_LIVES
+	g.NextStage()
 	return
 }
 
+func (g *Game) RestartGame() {
+	g.state = GAME_STATE_START
+	g.stage = 0
+	g.score = 0
+	g.lives = GAME_START_LIVES
+	g.asteroids = []Asteroid{}
+
+	g.NextStage()
+}
+
+func (g *Game) NextStage() {
+	g.stage += 1
+
+	g.player.position.X = float32(rl.GetScreenWidth()) * 0.5
+	g.player.position.Y = float32(rl.GetScreenHeight()) * 0.5
+	g.player.velocity = rl.Vector2{}
+	g.player.shield = PLAYER_SHIELD_LIFETIME_S
+	g.player.direction = PLAYER_START_DIRECTION
+	g.bullets = []Bullet{}
+	g.stageBreak = GAME_STAGE_BREAK_S
+
+	for range g.stage + 2 {
+		g.SpawnAsteroid()
+	}
+}
+
 func (g *Game) Update(delta float32) {
+	if g.state == GAME_STATE_START && rl.IsKeyPressed(rl.KeySpace) {
+		g.state = GAME_STATE_GAMEPLAY
+		return
+	}
+
+	if g.state == GAME_STATE_GAMEOVER && rl.IsKeyPressed(rl.KeySpace) {
+		g.RestartGame()
+		return
+	}
+
 	xUnit := m.Cosf(g.player.direction)
 	yUnit := m.Sinf(g.player.direction)
 
@@ -117,7 +161,7 @@ func (g *Game) Update(delta float32) {
 	}
 	g.player.direction = AngleWrap(g.player.direction)
 
-	if rl.IsKeyDown(rl.KeySpace) && g.player.bulletCooldown <= 0 {
+	if rl.IsKeyPressed(rl.KeySpace) {
 		velocity := rl.Vector2{
 			X: xUnit*BULLET_SPEED + g.player.velocity.X,
 			Y: yUnit*BULLET_SPEED + g.player.velocity.Y,
@@ -129,14 +173,6 @@ func (g *Game) Update(delta float32) {
 		}
 
 		g.bullets = append(g.bullets, bullet)
-		g.player.bulletCooldown = BULLET_COOLDOWN_S
-	}
-
-	if !rl.IsKeyDown(rl.KeySpace) {
-		g.player.bulletCooldown = 0.0
-	}
-	if g.player.bulletCooldown > 0 {
-		g.player.bulletCooldown -= delta
 	}
 
 	if g.player.shield > 0 {
@@ -168,6 +204,11 @@ func (g *Game) Update(delta float32) {
 		}
 	}
 
+	if g.lives <= 0 {
+		g.state = GAME_STATE_GAMEOVER
+		return
+	}
+
 bulletLoop:
 	for i := 0; i < len(g.bullets); {
 		g.bullets[i].position.X += g.bullets[i].velocity.X * delta
@@ -183,6 +224,9 @@ bulletLoop:
 				// delete the bullet
 				g.bullets[i] = g.bullets[len(g.bullets)-1]
 				g.bullets = g.bullets[:len(g.bullets)-1]
+
+				g.score += GAME_ASTEROID_SCORE
+
 				continue bulletLoop
 			} else {
 				j++
@@ -198,20 +242,19 @@ bulletLoop:
 			i++
 		}
 	}
+
+	if len(g.asteroids) == 0 {
+		if g.stageBreak > 0 {
+			g.stageBreak -= delta
+		} else {
+			g.NextStage()
+		}
+	}
 }
 
 func (g *Game) Draw() {
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.Black)
-
-	for _, bullet := range g.bullets {
-		rl.DrawCircle(
-			int32(bullet.position.X),
-			int32(bullet.position.Y),
-			BULLET_RADIUS,
-			rl.White,
-		)
-	}
 
 	for _, asteroid := range g.asteroids {
 		points := make([]rl.Vector2, len(asteroid.vertices)+2)
@@ -223,18 +266,45 @@ func (g *Game) Draw() {
 		rl.DrawTriangleFan(points, rl.White)
 	}
 
-	unit := rl.Vector2{X: PLAYER_RADIUS, Y: 0}
-	v1 := rl.Vector2Rotate(unit, g.player.direction)
-	v2 := rl.Vector2Rotate(unit, g.player.direction-PLAYER_ANGLE)
-	v3 := rl.Vector2Rotate(unit, g.player.direction+PLAYER_ANGLE)
-	rl.DrawTriangle(
-		rl.Vector2Add(g.player.position, v1),
-		rl.Vector2Add(g.player.position, v2),
-		rl.Vector2Add(g.player.position, v3),
-		rl.White,
-	)
-	if g.player.shield > 0 {
-		rl.DrawCircleLines(int32(g.player.position.X), int32(g.player.position.Y), PLAYER_RADIUS*1.5, rl.White)
+	if g.state == GAME_STATE_GAMEPLAY {
+		for _, bullet := range g.bullets {
+			rl.DrawCircle(
+				int32(bullet.position.X),
+				int32(bullet.position.Y),
+				BULLET_RADIUS,
+				rl.White,
+			)
+		}
+
+		unit := rl.Vector2{X: PLAYER_RADIUS, Y: 0}
+		v1 := rl.Vector2Rotate(unit, g.player.direction)
+		v2 := rl.Vector2Rotate(unit, g.player.direction-PLAYER_ANGLE)
+		v3 := rl.Vector2Rotate(unit, g.player.direction+PLAYER_ANGLE)
+		rl.DrawTriangle(
+			rl.Vector2Add(g.player.position, v1),
+			rl.Vector2Add(g.player.position, v2),
+			rl.Vector2Add(g.player.position, v3),
+			rl.White,
+		)
+		if g.player.shield > 0 {
+			rl.DrawCircleLines(int32(g.player.position.X), int32(g.player.position.Y), PLAYER_RADIUS*1.5, rl.White)
+		}
+
+		rl.DrawText(fmt.Sprintf("Lives: %d", g.lives), 2, 2, 24, rl.White)
+		rl.DrawText(fmt.Sprintf("Score: %d", g.score), 2, 28, 24, rl.White)
+	}
+
+	if g.state == GAME_STATE_GAMEOVER {
+		offset := rl.MeasureText("Game Over", 32) / 2
+		rl.DrawText("Game Over", int32(rl.GetScreenWidth())/2-offset, 2, 32, rl.White)
+		scoreText := fmt.Sprintf("Score: %d", g.score)
+		offset = rl.MeasureText(scoreText, 48) / 2
+		rl.DrawText(scoreText, int32(rl.GetScreenWidth())/2-offset, 36, 48, rl.White)
+	}
+
+	if g.state == GAME_STATE_START {
+		textHalfsize := rl.MeasureText("Press Start", 32) / 2
+		rl.DrawText("Press Start", int32(rl.GetScreenWidth())/2-textHalfsize, 2, 32, rl.White)
 	}
 
 	rl.EndDrawing()
@@ -371,4 +441,5 @@ func (g *Game) KillPlayer() {
 	g.player.velocity = rl.Vector2{}
 	g.player.direction = PLAYER_START_DIRECTION
 	g.player.shield = PLAYER_SHIELD_LIFETIME_S
+	g.lives -= 1
 }
