@@ -71,6 +71,19 @@ const (
 	GAME_STATE_GAMEOVER
 )
 
+type SoundRef int
+
+const (
+	SOUND_SHOOT_1 = iota
+	SOUND_SHOOT_2
+	SOUND_SHOOT_3
+	SOUND_SHOOT_4
+	SOUND_AST_SML
+	SOUND_AST_MED
+	SOUND_AST_LRG
+	SOUND_PLAYER_DEATH
+)
+
 type Game struct {
 	state      GameState
 	lives      int
@@ -80,6 +93,7 @@ type Game struct {
 	player     Player
 	bullets    []Bullet
 	asteroids  []Asteroid
+	sounds     map[SoundRef]rl.Sound
 }
 
 func main() {
@@ -87,17 +101,36 @@ func main() {
 	rl.SetWindowState(rl.FlagVsyncHint)
 	defer rl.CloseWindow()
 
+	rl.InitAudioDevice()
+	defer rl.CloseAudioDevice()
+
 	game := NewGame()
 
 	for !(rl.WindowShouldClose()) {
 		game.Update(rl.GetFrameTime())
 		game.Draw()
 	}
+
+	for _, a := range game.sounds {
+		rl.UnloadSound(a)
+	}
 }
 
 func NewGame() (g Game) {
 	g.state = GAME_STATE_START
 	g.lives = GAME_START_LIVES
+
+	g.sounds = map[SoundRef]rl.Sound{
+		SOUND_SHOOT_1:      rl.LoadSound("data/shoot1.wav"),
+		SOUND_SHOOT_2:      rl.LoadSound("data/shoot2.wav"),
+		SOUND_SHOOT_3:      rl.LoadSound("data/shoot3.wav"),
+		SOUND_SHOOT_4:      rl.LoadSound("data/shoot4.wav"),
+		SOUND_AST_SML:      rl.LoadSound("data/astsml.wav"),
+		SOUND_AST_MED:      rl.LoadSound("data/astmed.wav"),
+		SOUND_AST_LRG:      rl.LoadSound("data/astlrg.wav"),
+		SOUND_PLAYER_DEATH: rl.LoadSound("data/playerdeath.wav"),
+	}
+
 	g.NextStage()
 	return
 }
@@ -187,6 +220,7 @@ func (g *Game) UpdateGameStage(delta float32) {
 		}
 
 		g.bullets = append(g.bullets, bullet)
+		g.PlayBulletSound()
 	}
 
 	if g.player.shield > 0 {
@@ -201,6 +235,7 @@ func (g *Game) UpdateGameStage(delta float32) {
 	for i := 0; i < len(g.asteroids); {
 		if g.player.shield < 0 && g.asteroids[i].CollidesWithPlayer(g.player) {
 			g.SpawnChildAsteroids(g.asteroids[i])
+			g.PlayAsteroidSound(g.asteroids[i].size)
 			// delete the asteroid
 			g.asteroids[i] = g.asteroids[len(g.asteroids)-1]
 			g.asteroids = g.asteroids[:len(g.asteroids)-1]
@@ -225,6 +260,7 @@ bulletLoop:
 		for j := 0; j < len(g.asteroids); {
 			if g.asteroids[j].CollidesWithBullet(g.bullets[i]) {
 				g.SpawnChildAsteroids(g.asteroids[j])
+				g.PlayAsteroidSound(g.asteroids[j].size)
 				// delete the asteroid first
 				g.asteroids[j] = g.asteroids[len(g.asteroids)-1]
 				g.asteroids = g.asteroids[:len(g.asteroids)-1]
@@ -449,4 +485,21 @@ func (g *Game) KillPlayer() {
 	g.player.direction = PLAYER_START_DIRECTION
 	g.player.shield = PLAYER_SHIELD_LIFETIME_S
 	g.lives -= 1
+	rl.PlaySound(g.sounds[SOUND_PLAYER_DEATH])
+}
+
+func (g Game) PlayBulletSound() {
+	s := SoundRef(SOUND_SHOOT_1 + m.RandRangei(0, 4))
+	rl.PlaySound(g.sounds[s])
+}
+
+func (g Game) PlayAsteroidSound(s AsteroidSize) {
+	switch s {
+	case ASTEROID_SIZE_SMALL:
+		rl.PlaySound(g.sounds[SOUND_AST_SML])
+	case ASTEROID_SIZE_MEDIUM:
+		rl.PlaySound(g.sounds[SOUND_AST_MED])
+	case ASTEROID_SIZE_LARGE:
+		rl.PlaySound(g.sounds[SOUND_AST_LRG])
+	}
 }
